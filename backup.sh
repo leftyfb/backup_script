@@ -32,7 +32,7 @@ days="120"
 
 # MySQL username and password and db's
 MYSQLUSER="mysqluser"
-MYSQLPASS="yourpasswordhere""
+MYSQLPASS="yourpasswordhere"
 
 # excludes
 excludesdir="/root"
