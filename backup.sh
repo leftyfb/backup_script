@@ -12,8 +12,8 @@
 ## To use ssh keys, setup your ~/.ssh/config for the hostname.
 # ------------------ begin config --------------------------
 
-recipient=leftyfb@left-click.org
-smtp_login=leftyfb@left-click.org
+recipient=email@example.com
+smtp_login=email@example.com
 
 bastion=bastionserver01
 
