@@ -6,7 +6,6 @@
 #### Dependencies: ######
 ## rsync - for backing up files
 ## mysql - if you want to backup mysql db's
-## bc - calculations
 
 ### NOTE: ####
 ## To backup locally without ssh, type local after the hostname.
@@ -158,8 +157,8 @@ fi
 # Ugly converting of transferred file sizes from human to machine then back again to get total output in the end
 convert2machine () {
 KILO=1000
-MEGA=`echo "$KILO ^ 2" |bc`
-GIGA=`echo "$KILO ^ 3" |bc`
+MEGA=$(($KILO**2))
+GIGA=$(($KILO**3))
 declare -a values
 n=1
 
@@ -168,17 +167,17 @@ do
         if [ `echo $i | grep K` ]
         then
                 num=`echo $i | sed -e "s/K//"`
-                values[$n]=$(echo "$num * $KILO" | bc)
+                values[$n]=$(($num * $KILO))
                 (( n++ ))
         elif [ `echo $i | grep M` ]
         then
                 num=`echo $i | sed -e "s/M//"`
-                values[$n]=$(echo "$num * $MEGA" | bc)
+                values[$n]=$(($num * $MEGA))
                 (( n++ ))
         elif [ `echo $i | grep G` ]
         then
                 num=`echo $i | sed -e "s/G//"`
-                values[$n]=$(echo "$num * $GIGA" | bc)
+                values[$n]=$(($num * $GIGA))
                 (( n++ ))
         else
                 values[$n]=$i
@@ -191,7 +190,7 @@ sum=0
 
 while [ $arrn -lt $n ]
 do
-        sum=$(echo "$sum + ${values[$arrn]}" | bc)
+        sum=$(($sum + ${values[$arrn]}))
         (( arrn++ ))
 done
 }
