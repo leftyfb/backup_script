@@ -12,5 +12,6 @@ To use ssh keys, setup your ~/.ssh/config for the hostname.
 ### TODO
 - [ ] source ~/.backup.conf for settings
 - [ ] REALLY test and fix deleting old backups
+- [ ] add -l switch for local
 - [x] remove the whole "bastion" thing. We should use ssh ProxyJump instead
 - [x] remove bc as a dependency
