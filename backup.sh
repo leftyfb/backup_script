@@ -9,7 +9,8 @@
 
 ### NOTE: ####
 ## To backup locally without ssh, type local after the hostname.
-## To use ssh keys, setup your ~/.ssh/config for the hostname.
+## To use ssh keys or a bastion/jumphost, setup your ~/.ssh/config for the hostname.
+
 # ------------------ begin config --------------------------
 
 recipient=email@example.com
@@ -18,13 +19,8 @@ smtp_login=email@example.com
 # The user and the address of machine to be backed up via ssh
 target="$1"
 
-bastion=bastionserer01
-
 # Local directory where we'll be doing work and keeping copies of all archived files
 storage="/media/backups"
-
-# check if storage is mounted
-mount|grep $storage >/dev/null|| ( echo "$storage not mounted, exiting..." ; exit 0 )
 
 backupdir="$storage/$target"
 
@@ -49,6 +45,33 @@ emailfooter="$0 - $(date) - $HOSTNAME"
 lastbackup=$(grep " $target " $storage/backup_log|tail -n1)
 
 # ---------------------  end config ---------------------- 
+
+# check if storage is mounted
+mount|grep $storage >/dev/null|| ( echo "$storage not mounted, exiting..." ; exit 0 )
+
+fail_email(){
+ line1="$@"
+ line2="HALTING BACKUP!"
+ line3="Last Backup: $(echo $lastbackup)"
+ echo "$@\nHALTING BACKUP!"
+ echo -e "$line1\n$line2\n\n$line3\n\n$emailfooter"|mail -s "$HOSTNAME [BACKUP FAILED!] $target for $(date +%m-%d-%y)" $recipient
+ exit 0
+}
+
+# check if doing backup over ssh or locally
+if [ "$2" = "local" ]; then
+   echo "local" ; local=1 ; via=""
+else
+   echo "ssh" ; local=0 ; via="-e 'ssh -o StrictHostKeyChecking=no' $target:"
+fi
+
+# check for backup media
+if ( mount|grep $storage >/dev/null ); then
+ fail_email "$storage not mounted!"
+elif ( ssh $target "exit 0" 2>/dev/null) && [ "$local" = "0" ] ; then
+ fail_email "Hostname $target not accessible!"
+fi
+
 checkDir()
 {
 	if [ ! -d "$1" ]
@@ -56,7 +79,9 @@ checkDir()
 		mkdir -p "$1"
 	fi
 }
+
 checkDir $backupdir
+cd $backupdir
 
 exec > $logfile 2>&1
 
@@ -84,56 +109,11 @@ else
    exch="/dev/null"
 fi
 
-
 # Prints date of the format YYYY/MM/DD
 year=$(date +%Y)
 month=$(date +%m)
 day=$(date +%d)
 today="$year/$month/$day"
-
-# check if doing backup over ssh or ssh through bastion or locally
-if [ "$2" = "local" ]; then
-   echo "locally"
-   via=""
-elif [ "$2" = "bastion" ]; then
-   via="-e \"ssh $bastion ssh\" $target:" ; ssh=1
-else
-   echo "ssh"
-   via="-e 'ssh -o StrictHostKeyChecking=no' $target:" ; ssh=1
-fi
-
-# check for backup media
-if [ ! -d $backupdir ];
-then
- line1="NO BACKUP MEDIA LOCATED!"
- line2="HALTING BACKUP!"
- line3="Last Backup: $(echo $lastbackup)"
- echo "NO BACKUP MEDIA LOCATED!\nHALTING BACKUP!"
- echo -e "$line1\n$line2\n\n$line3\n\n$emailfooter"|mail -s "$HOSTNAME [BACKUP FAILED!] $target for $(date +%m-%d-%y)" $recipient
-   exit 0
-else
-   cd $backupdir
-fi
-
-# check for remote machine
-if [[ $via != "" && $2 != bastion ]]; then
-	up=`ssh -q $target echo "1"`
-elif [[ $via != "" && $2 = bastion ]]; then 
-	up=`ssh -q $bastion ssh -q $target echo "1"`
-else
-	up="1"
-fi
-
-if [[ $ssh = "1" && $up != 1 ]]; then
- echo -e "Hostname $target not accessible!\nHALTING BACKUP!"
- line1="Hostname $target not accessible!"
- line2="HALTING BACKUP!"
- line3="Last Backup: $(echo $lastbackup)"
- echo -e "$line1\n$line2\n\n$line3\n\n\n$emailfooter"|mail -s "$HOSTNAME [BACKUP FAILED!] $target for $(date +%m-%d-%y)" $recipient
-   exit 0
-else
-echo "SSH Connection established to $target"
-fi
 
 # make backup directories.
 current="$backupdir/current"
@@ -148,8 +128,6 @@ checkDir $now
 # get list of home directories
 if [ "$2" = "local" ]; then
    homelist=$(ls /home)
-elif [ "$2" = "bastion" ]; then
-   homelist=$(ssh $bastion ssh $target "ls /home/")
 else
    homelist=$(ssh $target "ls /home/")
 fi
@@ -213,35 +191,35 @@ for i in $homelist
  do
   echo "==== backing up $i ===="
   checkDir $current/home/$i
-  eval rsync -aphv --delete --stats --progress --exclude-from="$exch" $via/home/$i/ $current/home/$i
+  eval rsync -aHphv --delete --stats --progress --exclude-from="$exch" $via/home/$i/ $current/home/$i
   echo 
 done
-eval rsync -dvp -delete --stats --progress $via/home/ $current/home/
+eval rsync -Hdvp -delete --stats --progress $via/home/ $current/home/
 
 ## root
 echo "== backing up /root/ =="
 checkDir $current/root/
-eval rsync -aphv --delete --stats --progress $via/root/ $current/root/
+eval rsync -aHphv --delete --stats --progress $via/root/ $current/root/
 
 ## etc
 echo "== backing up /etc/ =="
 checkDir $current/etc/
-eval rsync -aphv --delete --stats --progress $via/etc/ $current/etc/
+eval rsync -aHphv --delete --stats --progress $via/etc/ $current/etc/
 
 ## var
 echo "== backing up /var/ =="
 checkDir $current/var/
-eval rsync -aphv --delete --delete-excluded --progress --exclude-from="$excv" --stats $via/var/ $current/var/
+eval rsync -aHphv --delete --delete-excluded --progress --exclude-from="$excv" --stats $via/var/ $current/var/
 
 ## usr
 echo "== backing up /usr/ =="
 checkDir $current/usr/
-eval rsync -aphv --delete --delete-excluded --progress --exclude-from="$excu" --stats $via/usr/ $current/usr/
+eval rsync -aHphv --delete --delete-excluded --progress --exclude-from="$excu" --stats $via/usr/ $current/usr/
 
 ## check for include file
 if [ -f $includedir/backup_includes.$target ] ; then
   echo "==== backing up includes ===="
-  eval rsync -aphv --delete --stats --progress --include-from="$includedir/backup_includes.$target" --exclude="/*" ${via}/ ${current}/
+  eval rsync -aHphv --delete --stats --progress --include-from="$includedir/backup_includes.$target" --exclude="/*" ${via}/ ${current}/
 fi
 
 ## Backup MYSQL databases
