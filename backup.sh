@@ -6,6 +6,7 @@
 #### Dependencies: ######
 ## rsync - for backing up files
 ## mysql - if you want to backup mysql db's
+## bc - calculations
 
 ### NOTE: ####
 ## To backup locally without ssh, type local after the hostname.
@@ -15,17 +16,21 @@
 recipient=email@example.com
 smtp_login=email@example.com
 
-bastion=bastionserver01
+# The user and the address of machine to be backed up via ssh
+target="$1"
+
+bastion=bastionserer01
 
 # Local directory where we'll be doing work and keeping copies of all archived files
 storage="/media/backups"
-backupdir="$storage/$1"
+
+# check if storage is mounted
+mount|grep $storage >/dev/null|| ( echo "$storage not mounted, exiting..." ; exit 0 )
+
+backupdir="$storage/$target"
 
 # Backup log file
 logfile="$backupdir/backup.log"
-
-# The user and the address of machine to be backed up via ssh
-login="$1"
 
 # The number of days after which old backups will be deleted
 days="120"					
@@ -36,12 +41,13 @@ MYSQLPASS="yourpasswordhere"
 
 # excludes
 excludesdir="/root"
+includedir="/root"
 excvar="backup_excludes.var"
 excusr="backup_excludes.usr"
-exchome="backup_excludes.$1"
+exchome="backup_excludes.$target"
 
 emailfooter="$0 - $(date) - $HOSTNAME"
-lastbackup=$(grep " $1 " $storage/backup_log|tail -n1)
+lastbackup=$(grep " $target " $storage/backup_log|tail -n1)
 
 # ---------------------  end config ---------------------- 
 checkDir()
@@ -86,16 +92,15 @@ month=$(date +%m)
 day=$(date +%d)
 today="$year/$month/$day"
 
-# get list of databases to backup
-DBS=$(ssh $login "mysql -u $MYSQLUSER --password=$MYSQLPASS -Bse 'show databases'")
-
 # check if doing backup over ssh or ssh through bastion or locally
 if [ "$2" = "local" ]; then
+   echo "locally"
    via=""
 elif [ "$2" = "bastion" ]; then
-   via="-e \"ssh $bastion ssh\" $login:" ; ssh=1
+   via="-e \"ssh $bastion ssh\" $target:" ; ssh=1
 else
-   via="-e 'ssh -o StrictHostKeyChecking=no' $login:" ; ssh=1
+   echo "ssh"
+   via="-e 'ssh -o StrictHostKeyChecking=no' $target:" ; ssh=1
 fi
 
 # check for backup media
@@ -105,7 +110,7 @@ then
  line2="HALTING BACKUP!"
  line3="Last Backup: $(echo $lastbackup)"
  echo "NO BACKUP MEDIA LOCATED!\nHALTING BACKUP!"
- echo -e "$line1\n$line2\n\n$line3\n\n$emailfooter"|mail -s "[BACKUP FAILED!] $1 for $(date +%m-%d-%y)" $recipient
+ echo -e "$line1\n$line2\n\n$line3\n\n$emailfooter"|mail -s "$HOSTNAME [BACKUP FAILED!] $target for $(date +%m-%d-%y)" $recipient
    exit 0
 else
    cd $backupdir
@@ -113,22 +118,22 @@ fi
 
 # check for remote machine
 if [[ $via != "" && $2 != bastion ]]; then
-	up=`ssh -q $1 echo "1"`
+	up=`ssh -q $target echo "1"`
 elif [[ $via != "" && $2 = bastion ]]; then 
-	up=`ssh -q $bastion ssh -q $1 echo "1"`
+	up=`ssh -q $bastion ssh -q $target echo "1"`
 else
 	up="1"
 fi
 
 if [[ $ssh = "1" && $up != 1 ]]; then
- echo -e "Hostname $1 not accessible!\nHALTING BACKUP!"
- line1="Hostname $1 not accessible!"
+ echo -e "Hostname $target not accessible!\nHALTING BACKUP!"
+ line1="Hostname $target not accessible!"
  line2="HALTING BACKUP!"
  line3="Last Backup: $(echo $lastbackup)"
- echo -e "$line1\n$line2\n\n$line3\n\n\n$emailfooter"|mail -s "[BACKUP FAILED!] $1 for $(date +%m-%d-%y)" $recipient
+ echo -e "$line1\n$line2\n\n$line3\n\n\n$emailfooter"|mail -s "$HOSTNAME [BACKUP FAILED!] $target for $(date +%m-%d-%y)" $recipient
    exit 0
 else
-echo "SSH Connection established to $1"
+echo "SSH Connection established to $target"
 fi
 
 # make backup directories.
@@ -145,9 +150,9 @@ checkDir $now
 if [ "$2" = "local" ]; then
    homelist=$(ls /home)
 elif [ "$2" = "bastion" ]; then
-   homelist=$(ssh $bastion ssh $login "ls /home/")
+   homelist=$(ssh $bastion ssh $target "ls /home/")
 else
-   homelist=$(ssh $login "ls /home/")
+   homelist=$(ssh $target "ls /home/")
 fi
 
 # Ugly converting of transferred file sizes from human to machine then back again to get total output in the end
@@ -158,7 +163,7 @@ GIGA=`echo "$KILO ^ 3" |bc`
 declare -a values
 n=1
 
-for i in `grep "Total trans" $logfile|awk  '{print $5}'|grep -v ^0`
+for i in `grep "Total trans" $logfile|awk  '{print $5}'|grep -v ^0|sed 's/,//g'`
 do
         if [ `echo $i | grep K` ]
         then
@@ -209,37 +214,48 @@ for i in $homelist
  do
   echo "==== backing up $i ===="
   checkDir $current/home/$i
-  eval rsync -aphvz --delete --stats --progress --compress --exclude-from="$exch" $via/home/$i/ $current/home/$i
+  eval rsync -aphv --delete --stats --progress --exclude-from="$exch" $via/home/$i/ $current/home/$i
   echo 
 done
-eval rsync -dvpz --delete --stats --compress --progress $via/home/ $current/home/
+eval rsync -dvp -delete --stats --progress $via/home/ $current/home/
 
 ## root
 echo "== backing up /root/ =="
 checkDir $current/root/
-eval rsync -aphvz --delete --stats --compress --progress $via/root/ $current/root/
+eval rsync -aphv --delete --stats --progress $via/root/ $current/root/
 
 ## etc
 echo "== backing up /etc/ =="
 checkDir $current/etc/
-eval rsync -aphvz --delete --stats --compress --progress $via/etc/ $current/etc/
+eval rsync -aphv --delete --stats --progress $via/etc/ $current/etc/
 
 ## var
 echo "== backing up /var/ =="
 checkDir $current/var/
-eval rsync -aphvz --delete --delete-excluded --progress --exclude-from="$excv" --stats --compress $via/var/ $current/var/
+eval rsync -aphv --delete --delete-excluded --progress --exclude-from="$excv" --stats $via/var/ $current/var/
 
 ## usr
 echo "== backing up /usr/ =="
 checkDir $current/usr/
-eval rsync -aphvz --delete --delete-excluded --progress --exclude-from="$excu" --stats --compress $via/usr/ $current/usr/
+eval rsync -aphv --delete --delete-excluded --progress --exclude-from="$excu" --stats $via/usr/ $current/usr/
+
+## check for include file
+if [ -f $includedir/backup_includes.$target ] ; then
+  echo "==== backing up includes ===="
+  eval rsync -aphv --delete --stats --progress --include-from="$includedir/backup_includes.$target" --exclude="/*" ${via}/ ${current}/
+fi
 
 ## Backup MYSQL databases
-checkDir $now/dbs
-echo "=== backing up Databases... ==="
-for i in $DBS;do echo "backing up $i...";ssh $login mysqldump -u $MYSQLUSER --password=$MYSQLPASS $i | gzip > $now/dbs/$i.sql.gz;done
+# get list of databases to backup
 
-ssh $i "echo $(date +%y%m%d) > /root/.lastbackup"
+if command -v mysql &>/dev/null ; then
+	DBS=$(ssh $target "mysql -u $MYSQLUSER --password=$MYSQLPASS -Bse 'show databases'")
+	checkDir $now/dbs
+	echo "=== backing up Databases... ==="
+	for m in $DBS;do echo "backing up $m...";ssh $target mysqldump --single-transaction -u $MYSQLUSER --password=$MYSQLPASS $m | gzip > $now/dbs/$m.sql.gz;done
+fi
+
+ssh $target "echo $(date +%y%m%d) > /root/.lastbackup"
 
 # Update the mtime to reflect the snapshot time
 echo "Updating mtime to reflect the snapshot time..."
@@ -298,7 +314,7 @@ fi
 cleanMonth() {
 for i in $(last90days) 
  do
-  monthcount=$(ls $old/$(echo $i|awk -F "/" '{print $1"/"$2}')/|wc -l)
+  monthcount=$(ls $old/$(echo $i|awk -F "/" '{print $1"/"$2}')/ 2>/dev/null |wc -l)
   if [ $i = "$day1" ] || [ $i = "$day2" ] || [ $i = "$day3" ] || [ $i = "$day4" ] || [ $i = "$day5" ] || [ $i = "$day6" ] || [ $i = "$day7" ]; then
    continue
   elif [[ $i == *01 ]] || [[ $i == *02 ]];
@@ -322,7 +338,7 @@ done
 cleanYear() {
 for i in $(aYearAgo)
  do
-  yearcount=$(ls -d $old/$lastYear/*/*|sort -u|grep -v ^$/|wc -l)
+  yearcount=$(ls -d $old/$lastYear/*/* 2>/dev/null|sort -u|grep -v ^$/|wc -l)
   if [ $i = "$lastYear/01/01" ] || [ $i = "$lastYear/01/02" ];
    then
    continue
@@ -336,10 +352,10 @@ done
 }
 
 cleanMonth
-if [ -d $lastYear ];
- then
-  cleanYear
-fi
+#if [ -d $old/$lastYear ];
+# then
+#  cleanYear
+#fi
 
 echo "**********************"
 echo " Backup ended at "
@@ -368,9 +384,9 @@ line4=$(echo -e "Backup took: $hours hour(s) $minutes minute(s) $seconds second(
 line5=$(echo -e "Last Backup: $lastbackup")
 line6=$(egrep "backing up|Number of files t|Total transferred file size" $logfile|grep -v -- ": 0")
 line7=$(grep -e "deleted $old" $logfile)
-echo -e "$line1\n\n$line2\n$line3\n$line4\n$line5\n\n$line6\n\n$line7\n\n$emailfooter"|mail -s "[BACKUP OK] $1 for $(date +%m-%d-%y)" $recipient
+echo -e "$line1\n\n$line2\n$line3\n$line4\n$line5\n\n$line6\n\n$line7\n\n$emailfooter"|mail -s "$HOSTNAME [BACKUP OK] $target for $(date +%m-%d-%y)" $recipient
 
-echo -e "$edate $1 $(echo $total)M $hours:$minutes:$seconds " >> $storage/backup_log
+echo -e "$edate $target $(echo $total)M $hours:$minutes:$seconds " >> $storage/backup_log
 echo "done"
 
 cp $logfile $now/
