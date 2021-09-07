@@ -283,8 +283,6 @@ if [ -d $1 ]
  then
   rm -rf $1
   echo "deleted $1"
- else
-  continue
 fi
 }
 
