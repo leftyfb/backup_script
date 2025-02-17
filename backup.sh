@@ -1,23 +1,17 @@
 #!/bin/bash
 #
-#### usage: ####
-###  backup.sh <hostname> local
-
 #### Dependencies: ######
 ## rsync - for backing up files
 ## mysql - if you want to backup mysql db's
+## bc - calculations
 
 ### NOTE: ####
-## To backup locally without ssh, type local after the hostname.
-## To use ssh keys or a bastion/jumphost, setup your ~/.ssh/config for the hostname.
+## Backing up over SSH assumes you have a profile for the target setup in your ~/.ssh/config file.
 
 # ------------------ begin config --------------------------
 
 recipient=email@example.com
 smtp_login=email@example.com
-
-# The user and the address of machine to be backed up via ssh
-target="$1"
 
 # Local directory where we'll be doing work and keeping copies of all archived files
 storage="/media/backups"
@@ -27,12 +21,9 @@ backupdir="$storage/$target"
 # Backup log file
 logfile="$backupdir/backup.log"
 
-# The number of days after which old backups will be deleted
-days="120"					
-
 # MySQL username and password and db's
-MYSQLUSER="mysqluser"
-MYSQLPASS="yourpasswordhere"
+DEFAULT_MYSQLUSER="mysqluser"
+DEFAULT_MYSQLPASS="yourpasswordhere"
 
 # excludes
 excludesdir="/root"
@@ -42,34 +33,73 @@ excusr="backup_excludes.usr"
 exchome="backup_excludes.$target"
 
 emailfooter="$0 - $(date) - $HOSTNAME"
-lastbackup=$(grep " $target " $storage/backup_log|tail -n1)
+lastbackup=$(grep " $target " $storage/backup_log 2>/dev/null|tail -n1)
 
 # ---------------------  end config ---------------------- 
 
-# check if storage is mounted
-mount|grep $storage >/dev/null|| ( echo "$storage not mounted, exiting..." ; exit 0 )
+usage() {
+  cat <<EOF
+Usage: $0 [OPTIONS]
 
-fail_email(){
- line1="$@"
- line2="HALTING BACKUP!"
- line3="Last Backup: $(echo $lastbackup)"
- echo "$@\nHALTING BACKUP!"
- echo -e "$line1\n$line2\n\n$line3\n\n$emailfooter"|mail -s "$HOSTNAME [BACKUP FAILED!] $target for $(date +%m-%d-%y)" $recipient
- exit 0
+Options:
+  --target=<name>      Specify the backup target.
+  --local              Run the script in local mode.
+  --mysqluser=<user>   Override the default MySQL username.
+  --mysqlpass=<pass>   Specify the MySQL password.
+  --help               Display this help message.
+
+Examples:
+  $0 --target=production
+  $0 --local
+  $0 --mysqluser=admin
+  $0 --mysqluser=admin --mysqlpass=supersecure
+  $0 --target=staging --local --mysqluser=admin --mysqlpass=topsecret
+EOF
+  exit 1
 }
 
-# check if doing backup over ssh or locally
-if [ "$2" = "local" ]; then
-   echo "local" ; local=1 ; via=""
-else
-   echo "ssh" ; local=0 ; via="-e 'ssh -o StrictHostKeyChecking=no' $target:"
+if [[ $# -eq 0 ]]; then
+  echo "Error: No arguments provided."
+  usage
 fi
 
-# check for backup media
-if ( mount|grep $storage >/dev/null ); then
- fail_email "$storage not mounted!"
-elif ( ssh $target "exit 0" 2>/dev/null) && [ "$local" = "0" ] ; then
- fail_email "Hostname $target not accessible!"
+for arg in "$@"; do
+  case $arg in
+    --target=*)
+      target="${arg#*=}"
+      shift
+      ;;
+    --local=*)
+      local=true
+      shift
+      ;;
+    --mysqluser=*)
+      MYSQLUSER="${arg#*=}"
+      USER_SPECIFIED=true
+      shift
+      ;;
+    --mysqlpass=*)
+      MYSQLPASS="${arg#*=}"
+      shift
+      ;;
+    --help)
+      usage
+      ;;
+    *)
+      echo "Unknown argument: $arg"
+      usage
+      ;;
+  esac
+done
+
+
+MYSQLUSER="${MYSQLUSER:-$DEFAULT_MYSQLUSER}"
+MYSQLPASS="${MYSQLPASS:-$DEFAULT_MYSQLPASS}"
+
+# check if storage is mounted
+if ! mount | grep -q "$storage"; then
+  echo "Error: ${storage} not mounted. Exiting..."
+  exit 1
 fi
 
 checkDir()
@@ -79,9 +109,7 @@ checkDir()
 		mkdir -p "$1"
 	fi
 }
-
 checkDir $backupdir
-cd $backupdir
 
 exec > $logfile 2>&1
 
@@ -109,11 +137,45 @@ else
    exch="/dev/null"
 fi
 
+
 # Prints date of the format YYYY/MM/DD
 year=$(date +%Y)
 month=$(date +%m)
 day=$(date +%d)
 today="$year/$month/$day"
+
+# check for backup media
+if [ ! -d $backupdir ];
+then
+ line1="NO BACKUP MEDIA LOCATED!"
+ line2="HALTING BACKUP!"
+ line3="Last Backup: $(echo $lastbackup)"
+ echo "NO BACKUP MEDIA LOCATED!\nHALTING BACKUP!"
+ echo -e "$line1\n$line2\n\n$line3\n\n$emailfooter"|mail -s "$HOSTNAME [BACKUP FAILED!] $target for $(date +%m-%d-%y)" $recipient
+   exit 0
+else
+   cd $backupdir
+fi
+
+# check if doing backup over ssh or locally
+if [[ "$local" == true ]]; then
+	echo "Running backup locally"
+	via=""
+else
+	echo "Running backup over ssh"
+	via="-e 'ssh -o StrictHostKeyChecking=no' $target:"
+	# check for remote target
+	if ssh -o BatchMode=yes -o ConnectTimeout=5 "$target" true 2>/dev/null; then
+		echo "SSH Connection established to $target"
+	else
+		echo -e "Hostname $target not accessible!\nHALTING BACKUP!"
+		line1="Hostname $target not accessible!"
+		line2="HALTING BACKUP!"
+		line3="Last Backup: $(echo $lastbackup)"
+		echo -e "$line1\n$line2\n\n$line3\n\n\n$emailfooter"|mail -s "$HOSTNAME [BACKUP FAILED!] $target for $(date +%m-%d-%y)" $recipient
+		exit 0
+	fi
+fi
 
 # make backup directories.
 current="$backupdir/current"
@@ -126,7 +188,7 @@ checkDir $now
 
 
 # get list of home directories
-if [ "$2" = "local" ]; then
+if [[ "$local" == true ]]; then
    homelist=$(ls /home)
 else
    homelist=$(ssh $target "ls /home/")
@@ -135,8 +197,8 @@ fi
 # Ugly converting of transferred file sizes from human to machine then back again to get total output in the end
 convert2machine () {
 KILO=1000
-MEGA=$(($KILO**2))
-GIGA=$(($KILO**3))
+MEGA=`echo "$KILO ^ 2" |bc`
+GIGA=`echo "$KILO ^ 3" |bc`
 declare -a values
 n=1
 
@@ -145,17 +207,17 @@ do
         if [ `echo $i | grep K` ]
         then
                 num=`echo $i | sed -e "s/K//"`
-                values[$n]=$(($num * $KILO))
+                values[$n]=$(echo "$num * $KILO" | bc)
                 (( n++ ))
         elif [ `echo $i | grep M` ]
         then
                 num=`echo $i | sed -e "s/M//"`
-                values[$n]=$(($num * $MEGA))
+                values[$n]=$(echo "$num * $MEGA" | bc)
                 (( n++ ))
         elif [ `echo $i | grep G` ]
         then
                 num=`echo $i | sed -e "s/G//"`
-                values[$n]=$(($num * $GIGA))
+                values[$n]=$(echo "$num * $GIGA" | bc)
                 (( n++ ))
         else
                 values[$n]=$i
@@ -168,7 +230,7 @@ sum=0
 
 while [ $arrn -lt $n ]
 do
-        sum=$(($sum + ${values[$arrn]}))
+        sum=$(echo "$sum + ${values[$arrn]}" | bc)
         (( arrn++ ))
 done
 }
@@ -191,45 +253,52 @@ for i in $homelist
  do
   echo "==== backing up $i ===="
   checkDir $current/home/$i
-  eval rsync -aHphv --delete --stats --progress --exclude-from="$exch" $via/home/$i/ $current/home/$i
+  eval rsync -aphv --delete --stats --progress --exclude-from="$exch" $via/home/$i/ $current/home/$i
   echo 
 done
-eval rsync -Hdvp -delete --stats --progress $via/home/ $current/home/
+eval rsync -dvp -delete --stats --progress $via/home/ $current/home/
 
 ## root
 echo "== backing up /root/ =="
 checkDir $current/root/
-eval rsync -aHphv --delete --stats --progress $via/root/ $current/root/
+eval rsync -aphv --delete --stats --progress $via/root/ $current/root/
 
 ## etc
 echo "== backing up /etc/ =="
 checkDir $current/etc/
-eval rsync -aHphv --delete --stats --progress $via/etc/ $current/etc/
+eval rsync -aphv --delete --stats --progress $via/etc/ $current/etc/
 
 ## var
 echo "== backing up /var/ =="
 checkDir $current/var/
-eval rsync -aHphv --delete --delete-excluded --progress --exclude-from="$excv" --stats $via/var/ $current/var/
+eval rsync -aphv --delete --delete-excluded --progress --exclude-from="$excv" --stats $via/var/ $current/var/
 
 ## usr
 echo "== backing up /usr/ =="
 checkDir $current/usr/
-eval rsync -aHphv --delete --delete-excluded --progress --exclude-from="$excu" --stats $via/usr/ $current/usr/
+eval rsync -aphv --delete --delete-excluded --progress --exclude-from="$excu" --stats $via/usr/ $current/usr/
 
 ## check for include file
 if [ -f $includedir/backup_includes.$target ] ; then
   echo "==== backing up includes ===="
-  eval rsync -aHphv --delete --stats --progress --include-from="$includedir/backup_includes.$target" --exclude="/*" ${via}/ ${current}/
+  eval rsync -aphv --delete --stats --progress --include-from="$includedir/backup_includes.$target" --exclude="/*" ${via}/ ${current}/
 fi
 
 ## Backup MYSQL databases
 # get list of databases to backup
 
-if command -v mysql &>/dev/null ; then
-	DBS=$(ssh $target "mysql -u $MYSQLUSER --password=$MYSQLPASS -Bse 'show databases'")
+if $(ssh $target "command -v mysql" &>/dev/null) ; then
 	checkDir $now/dbs
 	echo "=== backing up Databases... ==="
-	for m in $DBS;do echo "backing up $m...";ssh $target mysqldump --single-transaction -u $MYSQLUSER --password=$MYSQLPASS $m | gzip > $now/dbs/$m.sql.gz;done
+	if [[ "$USER_SPECIFIED" == true ]]; then
+		DBS=$(ssh $target "mysql -u $MYSQLUSER -Bse 'show databases'")
+		for m in $DBS;do echo "backing up $m...";ssh $target mysqldump --single-transaction -u $MYSQLUSER $m | gzip > $now/dbs/$m.sql.gz;done
+	else
+		DBS=$(ssh $target "mysql -u $MYSQLUSER --password=$MYSQLPASS -Bse 'show databases'")
+		for m in $DBS;do echo "backing up $m...";ssh $target mysqldump --single-transaction -u $MYSQLUSER --password=$MYSQLPASS $m | gzip > $now/dbs/$m.sql.gz;done
+	fi
+else
+	echo "=== No Databases found ==="
 fi
 
 ssh $target "echo $(date +%y%m%d) > /root/.lastbackup"
@@ -281,8 +350,13 @@ done
 ifdirdel() {
 if [ -d $1 ]
  then
-  rm -rf $1
+ rm -rf $1
   echo "deleted $1"
+  daycount=$(find ${old}/${i%/*} -maxdepth 1 -mindepth 1 -type d|wc -l)
+  if [ $daycount = 0 ] ; then
+   rmdir ${old}/${i%/*}
+   echo "deleted ${i%/*}"
+  fi
 fi
 }
 
@@ -313,13 +387,11 @@ done
 cleanYear() {
 for i in $(aYearAgo)
  do
-  yearcount=$(ls -d $old/$lastYear/*/* 2>/dev/null|sort -u|grep -v ^$/|wc -l)
-  if [ $i = "$lastYear/01/01" ] || [ $i = "$lastYear/01/02" ];
-   then
+  yearcount=$(find $old/${i%%/*} -maxdepth 2 -mindepth 2 -type d 2>/dev/null|wc -l)
+  if [ $i = "$lastYear/01/01" ] || [ $i = "$lastYear/01/02" ]; then
    continue
-  elif [ $yearcount = 1 ];
-   then
-    continue
+  elif [ $yearcount = 1 ]; then
+   continue
   else
    ifdirdel $old/$i
   fi
@@ -327,10 +399,10 @@ done
 }
 
 cleanMonth
-#if [ -d $old/$lastYear ];
-# then
-#  cleanYear
-#fi
+if [ -d $old/$lastYear ];
+ then
+  cleanYear
+fi
 
 echo "**********************"
 echo " Backup ended at "
