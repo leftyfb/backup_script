@@ -16,11 +16,6 @@ smtp_login=email@example.com
 # Local directory where we'll be doing work and keeping copies of all archived files
 storage="/media/backups"
 
-backupdir="$storage/$target"
-
-# Backup log file
-logfile="$backupdir/backup.log"
-
 # MySQL username and password and db's
 DEFAULT_MYSQLUSER="mysqluser"
 DEFAULT_MYSQLPASS="yourpasswordhere"
@@ -95,6 +90,8 @@ done
 
 MYSQLUSER="${MYSQLUSER:-$DEFAULT_MYSQLUSER}"
 MYSQLPASS="${MYSQLPASS:-$DEFAULT_MYSQLPASS}"
+backupdir="$storage/$target"
+logfile="$backupdir/backup.log"
 
 # check if storage is mounted
 if ! mount | grep -q "$storage"; then
