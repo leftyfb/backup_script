@@ -9,7 +9,7 @@ bc - calculations
 ## NOTE: #
 Backing up over SSH assumes you have a profile for the target setup in your ~/.ssh/config file.
 
-Usage: $0 [OPTIONS]
+```Usage: $0 [OPTIONS]
 
 Options:
   --target=<name>      Specify the backup target.
@@ -24,6 +24,7 @@ Examples:
   $0 --mysqluser=admin
   $0 --mysqluser=admin --mysqlpass=supersecure
   $0 --target=staging --local --mysqluser=admin --mysqlpass=topsecret
+```
 
 ### TODO
 - [ ] source ~/.backup.conf for settings
