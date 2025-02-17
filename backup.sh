@@ -281,24 +281,39 @@ if [ -f $includedir/backup_includes.$target ] ; then
   eval rsync -aphv --delete --stats --progress --include-from="$includedir/backup_includes.$target" --exclude="/*" ${via}/ ${current}/
 fi
 
-## Backup MYSQL databases
-# get list of databases to backup
+backup_databases() {
+    local cmd_prefix=$1
+    echo "=== Backing up Databases... ==="
+    DBS=$($cmd_prefix "mysql -u $MYSQLUSER ${MYSQLPASS:+--password=$MYSQLPASS} -Bse 'show databases' 2>/dev/null")
+    for m in $DBS; do
+        echo "backing up $m..."
+        $cmd_prefix "mysqldump --single-transaction -u $MYSQLUSER ${MYSQLPASS:+--password=$MYSQLPASS} $m" 2>/dev/null| gzip > "$now/dbs/$m.sql.gz"
+    done
+}
 
-if $(ssh $target "command -v mysql" &>/dev/null) ; then
-	checkDir $now/dbs
-	echo "=== backing up Databases... ==="
-	if [[ "$USER_SPECIFIED" == true ]]; then
-		DBS=$(ssh $target "mysql -u $MYSQLUSER -Bse 'show databases'")
-		for m in $DBS;do echo "backing up $m...";ssh $target mysqldump --single-transaction -u $MYSQLUSER $m | gzip > $now/dbs/$m.sql.gz;done
-	else
-		DBS=$(ssh $target "mysql -u $MYSQLUSER --password=$MYSQLPASS -Bse 'show databases'")
-		for m in $DBS;do echo "backing up $m...";ssh $target mysqldump --single-transaction -u $MYSQLUSER --password=$MYSQLPASS $m | gzip > $now/dbs/$m.sql.gz;done
-	fi
+# Ensure directory exists
+checkDir "$now/dbs"
+
+# Run backup locally or via SSH
+if [[ "$local" == true ]]; then
+    if command -v mysql &>/dev/null; then
+        backup_databases ""
+    else
+        echo "=== No Local Databases found ==="
+    fi
 else
-	echo "=== No Databases found ==="
+    if ssh "$target" "command -v mysql" &>/dev/null; then
+        backup_databases "ssh $target"
+    else
+        echo "=== No Remote Databases found ==="
+    fi
 fi
 
-ssh $target "echo $(date +%y%m%d) > /root/.lastbackup"
+if [[ "$local" == true ]]; then
+        echo $(date +%y%m%d) > /root/.lastbackup
+else
+        ssh $target "echo $(date +%y%m%d) > /root/.lastbackup"
+fi
 
 # Update the mtime to reflect the snapshot time
 echo "Updating mtime to reflect the snapshot time..."
