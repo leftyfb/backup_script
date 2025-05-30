@@ -19,6 +19,7 @@ storage="/media/backups"
 # MySQL username and password and db's
 DEFAULT_MYSQLUSER="mysqluser"
 DEFAULT_MYSQLPASS="yourpasswordhere"
+ROOTMSQL=false
 
 # excludes
 excludesdir="/root"
@@ -39,12 +40,14 @@ Usage: $0 [OPTIONS]
 Options:
   --target=<name>      Specify the backup target.
   --local              Run the script in local mode.
+  --rootmysql
   --mysqluser=<user>   Override the default MySQL username.
   --mysqlpass=<pass>   Specify the MySQL password.
   --help               Display this help message.
 
 Examples:
   $0 --target=production
+  $0 --rootmysql
   $0 --local
   $0 --mysqluser=admin
   $0 --mysqluser=admin --mysqlpass=supersecure
@@ -57,15 +60,15 @@ if [[ $# -eq 0 ]]; then
   echo "Error: No arguments provided."
   usage
 fi
-
 for arg in "$@"; do
   case $arg in
     --target=*)
       target="${arg#*=}"
       shift
       ;;
-    --local=*)
+    --local)
       local=true
+      target="$(hostname)"
       shift
       ;;
     --mysqluser=*)
@@ -77,6 +80,14 @@ for arg in "$@"; do
       MYSQLPASS="${arg#*=}"
       shift
       ;;
+    --rootmysql)
+      ROOTMYSQL=true
+      shift
+      ;;
+    --docker=*)
+      DOCKERID="${arg#*=}"
+      shift
+      ;;
     --help)
       usage
       ;;
@@ -86,7 +97,6 @@ for arg in "$@"; do
       ;;
   esac
 done
-
 
 MYSQLUSER="${MYSQLUSER:-$DEFAULT_MYSQLUSER}"
 MYSQLPASS="${MYSQLPASS:-$DEFAULT_MYSQLPASS}"
@@ -278,16 +288,29 @@ eval rsync -aphv --delete --delete-excluded --progress --exclude-from="$excu" --
 ## check for include file
 if [ -f $includedir/backup_includes.$target ] ; then
   echo "==== backing up includes ===="
-  eval rsync -aphv --delete --stats --progress --include-from="$includedir/backup_includes.$target" --exclude="/*" ${via}/ ${current}/
+  eval rsync -aphv --delete --stats --progress --include-from="$includedir/backup_includes.$target" ${via}/ ${current}/
 fi
 
 backup_databases() {
     local cmd_prefix=$1
     echo "=== Backing up Databases... ==="
-    DBS=$($cmd_prefix "mysql -u $MYSQLUSER ${MYSQLPASS:+--password=$MYSQLPASS} -Bse 'show databases' 2>/dev/null")
+    if [ "$ROOTMYSQL" = true ]; then
+	MYSQLAUTH=""
+    else
+	MYSQLAUTH="-u $MYSQLUSER ${MYSQLPASS:+--password=$MYSQLPASS}"
+    fi
+	if [[ -n "$DOCKERID" ]]; then
+	DBS=$($cmd_prefix "docker exec $DOCKERID sh -c \"mysql $MYSQLAUTH -Bse 'show databases;'\"")
+    else
+		DBS=$($cmd_prefix "mysql $MYSQLAUTH -Bse 'show databases;' 2>/dev/null")
+    fi
     for m in $DBS; do
         echo "backing up $m..."
-        $cmd_prefix "mysqldump --single-transaction -u $MYSQLUSER ${MYSQLPASS:+--password=$MYSQLPASS} $m" 2>/dev/null| gzip > "$now/dbs/$m.sql.gz"
+		if [[ -n "$DOCKERID" ]]; then
+		$cmd_prefix "docker exec $DOCKERID sh -c \"mysqldump --single-transaction $MYSQLAUTH $m\"" 2>/dev/null | gzip > "$now/dbs/$m.sql.gz"
+	else
+		$cmd_prefix "mysqldump --single-transaction $MYSQLAUTH $m" 2>/dev/null| gzip > "$now/dbs/$m.sql.gz"
+	fi
     done
 }
 
@@ -302,17 +325,22 @@ if [[ "$local" == true ]]; then
         echo "=== No Local Databases found ==="
     fi
 else
-    if ssh "$target" "command -v mysql" &>/dev/null; then
+    if [[ -n "$DOCKERID" ]] ; then
+	if ssh "$target" "docker exec $DOCKERID sh -c 'command -v mysql'" &>/dev/null; then
+		backup_databases "ssh $target"
+	else
+		echo "=== No Remote Databases found in docker container ==="
+	fi
+    elif ssh "$target" "command -v mysql" &>/dev/null; then
         backup_databases "ssh $target"
     else
         echo "=== No Remote Databases found ==="
     fi
 fi
-
 if [[ "$local" == true ]]; then
-        echo $(date +%y%m%d) > /root/.lastbackup
+	echo $(date +%y%m%d) > /root/.lastbackup
 else
-        ssh $target "echo $(date +%y%m%d) > /root/.lastbackup"
+	ssh $target "echo $(date +%y%m%d) > /root/.lastbackup"
 fi
 
 # Update the mtime to reflect the snapshot time
